@@ -9,7 +9,7 @@
 import Foundation
 
 //  MARK: CameraService Enums
-extension CameraService {
+public extension CameraService {
     enum LivePhotoMode {
         case on
         case off
@@ -26,6 +26,7 @@ extension CameraService {
     }
     
     enum SessionSetupResult {
+        case unknown
         case success
         case notAuthorized
         case configurationFailed

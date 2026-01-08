@@ -52,35 +52,43 @@ extension Photo {
         return UIImage(data: data)
     }
     public var image: UIImage? {
-        guard let data = compressedData else { return nil }
-        return UIImage(data: data)
+        return UIImage(data: originalData)
     }
 }
 
-public class CameraService: NSObject, Identifiable {
+public class CameraService: NSObject, Identifiable, ObservableObject {
     typealias PhotoCaptureSessionID = String
+    
+    public enum CameraServiceError: Error, LocalizedError {
+        case unableToStart
+        case noPermission
+        
+        public var errorDescription: String? {
+            return "This lets you share photos and preview effects."
+        }
+    }
     
     //    MARK: Observed Properties UI must react to
     
     @Published public var flashMode: AVCaptureDevice.FlashMode = .off
-    @Published public var shouldShowAlertView = false
-    @Published public var shouldShowSpinner = false
     
     @Published public var willCapturePhoto = false
     @Published public var isCameraButtonDisabled = false
     @Published public var isCameraUnavailable = false
     @Published public var photo: Photo?
+    @Published public var shouldShowSpinner = false
+
     
     //    MARK: Alert properties
-    public var alertError: AlertError = AlertError()
-    
+    @Published public var error: CameraServiceError?
+    @Published public private(set) var setupResult: SessionSetupResult = .unknown
+
     // MARK: Session Management Properties
     
     public let session = AVCaptureSession()
     
     var isSessionRunning = false
     var isConfigured = false
-    var setupResult: SessionSetupResult = .success
     
     // Communicate with the session and other session objects on this queue.
     let sessionQueue = DispatchQueue(label: "session queue")
@@ -112,7 +120,7 @@ public class CameraService: NSObject, Identifiable {
         }
     }
     
-    public func configure() {
+    public func configure(possiblePositions: [AVCaptureDevice.Position]) {
         if !self.isSessionRunning && !self.isConfigured {
             /*
              Setup the capture session.
@@ -125,7 +133,7 @@ public class CameraService: NSObject, Identifiable {
              that the main queue isn't blocked, which keeps the UI responsive.
              */
             sessionQueue.async {
-                self.configureSession()
+                self.configureSession(possiblePositions: possiblePositions)
             }
         }
     }
@@ -140,7 +148,8 @@ public class CameraService: NSObject, Identifiable {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             // The user has previously granted access to the camera.
-            break
+            self.setupResult = .success
+            
         case .notDetermined:
             /*
              The user has not yet been presented with the option to grant
@@ -152,7 +161,9 @@ public class CameraService: NSObject, Identifiable {
              */
             sessionQueue.suspend()
             AVCaptureDevice.requestAccess(for: .video, completionHandler: { granted in
-                if !granted {
+                if granted {
+                    self.setupResult = .success
+                } else {
                     self.setupResult = .notAuthorized
                 }
                 self.sessionQueue.resume()
@@ -163,12 +174,7 @@ public class CameraService: NSObject, Identifiable {
             setupResult = .notAuthorized
             
             DispatchQueue.main.async {
-                self.alertError = AlertError(title: "Camera Access", message: "Campus no tiene permiso para usar la cámara, por favor cambia la configruación de privacidad", primaryButtonTitle: "Configuración", secondaryButtonTitle: nil, primaryAction: {
-                        UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!,
-                                                  options: [:], completionHandler: nil)
-                    
-                }, secondaryAction: nil)
-                self.shouldShowAlertView = true
+                self.error = .noPermission
                 self.isCameraUnavailable = true
                 self.isCameraButtonDisabled = true
             }
@@ -179,7 +185,7 @@ public class CameraService: NSObject, Identifiable {
     
     // Call this on the session queue.
     /// - Tag: ConfigureSession
-    private func configureSession() {
+    private func configureSession(possiblePositions: [AVCaptureDevice.Position]) {
         if setupResult != .success {
             return
         }
@@ -196,17 +202,20 @@ public class CameraService: NSObject, Identifiable {
         do {
             var defaultVideoDevice: AVCaptureDevice?
             
-            if let backCameraDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) {
-                // If a rear dual camera is not available, default to the rear wide angle camera.
-                defaultVideoDevice = backCameraDevice
-            } else if let frontCameraDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) {
-                // If the rear wide angle camera isn't available, default to the front wide angle camera.
-                defaultVideoDevice = frontCameraDevice
+            for position in possiblePositions {
+                if let device = AVCaptureDevice.default(.builtInWideAngleCamera,
+                                                                  for: .video,
+                                                                  position: position) {
+                    defaultVideoDevice = device
+                    break
+                }
             }
             
             guard let videoDevice = defaultVideoDevice else {
                 print("Default video device is unavailable.")
-                setupResult = .configurationFailed
+                DispatchQueue.main.sync {
+                    setupResult = .configurationFailed
+                }
                 session.commitConfiguration()
                 return
             }
@@ -219,13 +228,17 @@ public class CameraService: NSObject, Identifiable {
                 
             } else {
                 print("Couldn't add video device input to the session.")
-                setupResult = .configurationFailed
+                DispatchQueue.main.sync {
+                    setupResult = .configurationFailed
+                }
                 session.commitConfiguration()
                 return
             }
         } catch {
             print("Couldn't create video device input: \(error)")
-            setupResult = .configurationFailed
+            DispatchQueue.main.sync {
+                setupResult = .configurationFailed
+            }
             session.commitConfiguration()
             return
         }
@@ -263,8 +276,7 @@ public class CameraService: NSObject, Identifiable {
             self.isSessionRunning = self.session.isRunning
             if !self.session.isRunning {
                 DispatchQueue.main.async {
-                    self.alertError = AlertError(title: "Camera Error", message: "Unable to resume camera", primaryButtonTitle: "Accept", secondaryButtonTitle: nil, primaryAction: nil, secondaryAction: nil)
-                    self.shouldShowAlertView = true
+                    self.error = .unableToStart
                     self.isCameraUnavailable = true
                     self.isCameraButtonDisabled = true
                 }
@@ -453,11 +465,13 @@ public class CameraService: NSObject, Identifiable {
                     
                 case .configurationFailed:
                     DispatchQueue.main.async {
-                        self.alertError = AlertError(title: "Camera Error", message: "Camera configuration failed. Either your device camera is not available or other application is using it", primaryButtonTitle: "Accept", secondaryButtonTitle: nil, primaryAction: nil, secondaryAction: nil)
-                        self.shouldShowAlertView = true
+                        self.error = .unableToStart
                         self.isCameraButtonDisabled = true
                         self.isCameraUnavailable = true
                     }
+                    
+                case .unknown:
+                    break
                 }
             }
         }
@@ -523,9 +537,6 @@ public class CameraService: NSObject, Identifiable {
                     // When the capture is complete, remove a reference to the photo capture delegate so it can be deallocated.
                     if let data = photoCaptureProcessor.photoData {
                         self.photo = Photo(originalData: data)
-                        print("passing photo")
-                    } else {
-                        print("No photo data")
                     }
                     
                     self.isCameraButtonDisabled = false

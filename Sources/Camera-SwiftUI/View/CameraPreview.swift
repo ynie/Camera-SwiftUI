@@ -46,9 +46,9 @@ public struct CameraPreview: UIViewRepresentable {
                 self.focusView.layer.opacity = 1
             }) { (completed) in
                 if completed {
-                    UIView.animate(withDuration: 0.3) {
+                    UIView.animate(withDuration: 0.3, delay: 0.3, animations: {
                         self.focusView.layer.opacity = 0
-                    }
+                    })
                 }
             }
         }
@@ -71,7 +71,8 @@ public struct CameraPreview: UIViewRepresentable {
     
     public func makeUIView(context: Context) -> VideoPreviewView {
         let viewFinder = VideoPreviewView()
-        viewFinder.backgroundColor = .black
+        viewFinder.backgroundColor = .clear
+        viewFinder.videoPreviewLayer.videoGravity = .resizeAspectFill
         viewFinder.videoPreviewLayer.cornerRadius = 0
         viewFinder.videoPreviewLayer.session = session
         viewFinder.videoPreviewLayer.connection?.videoOrientation = .portrait
